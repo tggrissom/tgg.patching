@@ -1,0 +1,279 @@
+---
+- name: pre-patch sanity check
+  block:
+    - name: Global Pre-Patch Sanitycheck
+      block:
+      - name: Does Global Sanitycheck Exists
+        local_action: stat path="{{ role_path }}/tasks/sanitycheck/global.yaml"
+        register: global_sanity_stat_result
+
+      - name: Run Global Pre-Patch Sanitycheck
+        include_tasks: "{{ role_path }}/tasks/sanitycheck/global.yaml"
+        when: global_sanity_stat_result.stat.exists == True
+
+    - name: Group Pre-Patch Sanity Check
+      block:
+        - name: check Group Pre-Patch Senaity exists
+          local_action: stat path="{{ role_path }}/tasks/sanitycheck/{{ item }}.yaml" 
+          register: group_prepatch_sanity_stat_result
+          with_items: "{{ group_names }}"
+
+        - name: Run Group Pre-Patch sanity
+          include_tasks: "{{ item.stat.path }}"
+          with_items: "{{ group_prepatch_sanity_stat_result.results }}"
+          when: item.stat.exists == True
+
+    - name: Host Pre-Patch Sanitycheck
+      block:
+
+      - name: Host Pre-Patch Sanitycheck exist
+        local_action: stat path="{{ role_path }}/tasks/sanitycheck/{{ inventory_hostname }}.yaml"
+        register: host_sanity_stat_result
+
+      - name: Run Host Pre-Paych Sanitycheck
+        include_tasks: "{{ role_path }}/tasks/sanitycheck/{{ inventory_hostname }}.yaml"
+        when: host_sanity_stat_result.stat.exists == True
+  when: run_pre_patch_sanity_check
+
+- name: pre-patch actions
+  block:
+    - name: Global Pre-Patch Action
+      block:
+      - name: Does Global Pre-Patch Action Exists
+        local_action: stat path="{{ role_path }}/tasks/prepatch/global.yaml"
+        register: global_prepatch_stat_result
+
+      - name: Run Global Pre-Patch Action`
+        include_tasks: "{{ role_path }}/tasks/prepatch/global.yaml"
+        when: global_prepatch_stat_result.stat.exists == True
+
+    - name: Group Pre-Patch Action
+      block:
+      - name: Check Group Pre-Patch Action exists
+        local_action: stat path="{{ role_path }}/tasks/prepatch/{{ item }}.yaml" 
+        register: group_prepatch_stat_result
+        with_items: "{{ group_names }}"
+
+      - name: Run Group Pre-Patch Action
+        include_tasks: "{{ item.stat.path }}"
+        with_items: "{{ group_prepatch_stat_result.results }}"
+        when: item.stat.exists == True
+
+    - name: Host Pre-Patch Action
+      block:
+
+      - name: Host Pre-Patch Action exist
+        local_action: stat path="{{ role_path }}/tasks/prepatch/{{ inventory_hostname }}.yaml"
+        register: host_prepatch_stat_result
+
+      - name: Run Host Pre-Patch Action
+        include_tasks: "{{ role_path }}/tasks/prepatch/{{ inventory_hostname }}.yaml"
+        when: host_prepatch_stat_result.stat.exists == True
+  when: run_pre_patch_action
+
+- name: Patching
+  block:
+  - name: Patch RedHat Fmaily
+    block:
+    - name: YUM Clean cache
+      command: yum clean all
+      args:
+        warn: false
+      changed_when: false
+
+    - name: YUM Update packages maked security
+      yum:
+        name: '*'
+        state: latest
+        security: true
+      when:
+        - patch_security
+        - not patch_all
+
+    - name: YUM Upgrade packages
+      yum:
+        name: '*'
+        state: latest
+      when:
+        - patch_all
+        - not patch_security
+    when: ansible_os_family == 'RedHat'
+
+  - name: Debain Famaily
+    block:
+  
+      - name: ATP Update cache
+        apt:
+          update_cache: true
+          cache_valid_time: "{{ patching_apt_cache }}"
+  
+      - name: APT Upgrade packages
+        apt:
+          state: latest
+          upgrade: true
+        when: not patch_dist_upgrade
+  
+      - name: APT Dist Upgrade packages
+        apt:
+          state: latest
+          upgrade: "dist"
+        when: patch_dist_upgrade
+  
+      - name: APT Clean cache
+        apt:
+          autoclean: true
+        when: patch_clean_all
+  
+      - name: APT Remove packages and files
+        apt:
+          autoremove: true
+          purge: true
+        when: patch_autoclean
+  
+    when: ansible_os_family == 'Debian'
+
+- name: Reboot
+  block:
+  - name: Reboot RedHat Family
+    block:
+    - name: Check for reboot hint.
+      shell: LAST_KERNEL=$(rpm -q --last kernel | awk 'NR==1{sub(/kernel-/,""); print $1}'); CURRENT_KERNEL=$(uname -r); if [ $LAST_KERNEL != $CURRENT_KERNEL ]; then echo 'reboot'; else echo 'no'; fi
+      ignore_errors: true
+      register: reboot_hint
+
+    - name: Rebooting ...
+      command: shutdown -r now "Reboot required for updated kernel"
+#      async: 0
+#      command: "reboot"
+      async: 1
+      poll: 0
+      sudo: true
+      ignore_errors: true
+      when: reboot_hint.stdout.find("reboot") != -1
+      register: rhel_rebooting
+
+    - name: Wait for centos thang to reboot...
+      wait_for_connection:
+        connect_timeout: 20
+        sleep: 5
+        delay: 30
+        timeout: 180
+      when: rhel_rebooting|changed
+    when: ansible_os_family == 'RedHat'
+
+  - name: Reboot Debian Family
+    block:
+    - name: Reboot box if kernel/libs updated and requested by the system
+      shell: "sleep 10 && /sbin/shutdown -r now 'Rebooting box to update system libs/kernel as needed'"
+#      shell: sleep 10 && /sbin/reboot
+      args:
+          removes: /var/run/reboot-required
+      async: 300
+      poll: 0
+      ignore_errors: true
+      register: deb_rebooting
+
+    - name: Wait for debian thang to reboot...
+      wait_for_connection:
+        connect_timeout: 20
+        sleep: 5
+        delay: 30
+        timeout: 180
+      when: deb_rebooting|changed
+    when: ansible_os_family == 'Debian'
+  when: reboot_if_needed
+
+- name: Post-Patch actions
+  block:
+  - name: Global Post-Patch Action
+    block:
+    - name: Does Global Post-Patch Action Exists
+      local_action: stat path="{{ role_path }}/tasks/postpatch/global.yaml"
+      register: global_postpatch_stat_result
+
+    - name: Run Global Post-Patch Action`
+      include_tasks: "{{ role_path }}/tasks/postpatch/global.yaml"
+      when: global_postpatch_stat_result.stat.exists == True
+
+  - name: Group Post-Patch Action
+    block:
+    - name: Check Group Post-Patch Action exists
+      local_action: stat path="{{ role_path }}/tasks/postpatch/{{ item }}.yaml" 
+      register: group_postpatch_action_stat_result
+      with_items: "{{ group_names }}"
+
+    - name: Run Group Post-Patch Action
+      include_tasks: "{{ item.stat.path }}"
+      with_items: "{{ group_postpatch_action_stat_result.results }}"
+      when: item.stat.exists == True
+
+  - name: Host Post-Patch Action
+    block:
+    - name: Host Post-Patch Action exist
+      local_action: stat path="{{ role_path }}/tasks/postpatch/{{ inventory_hostname }}.yaml"
+      register: host_postpatch_action_stat_result
+
+    - name: Run Host Post-Patch Action
+      include_tasks: "{{ role_path }}/tasks/postpatch/{{ inventory_hostname }}.yaml"
+      when: host_postpatch_action_stat_result.stat.exists == True
+  when: run_post_patch_action
+
+- name: Post-Patch Sanity Check
+  block:
+  - name: Global Post-Patch Sanity Check
+    block:
+    - name: Run Global Post-Patch Sanitycheck
+      include_tasks: "{{ role_path }}/tasks/sanitycheck/global.yaml"
+      when: global_sanity_stat_result.stat.exists == True
+
+  - name: Group Post-Patch Sanity Check
+    block:
+    - name: Check Group Post-Patch Sanity Exists
+      local_action: stat path="{{ role_path }}/tasks/sanitycheck/{{ item }}.yaml" 
+      register: group_postpatch_sanity_stat_result2
+      with_items: "{{ group_names }}"
+
+    - name: Run Group Post-Patch sanity
+      include_tasks: "{{ item.stat.path }}"
+      with_items: "{{ group_postpatch_sanity_stat_result2.results }}"
+      when: item.stat.exists == True
+
+  - name: Host Post-Patch Sanitycheck
+    block:
+    - name: Run Host Post-Patch Sanitycheck
+      include_tasks: "{{ role_path }}/tasks/sanitycheck/{{ inventory_hostname }}.yaml"
+      when: host_sanity_stat_result.stat.exists == True
+  when: run_post_patch_sanity_check
+
+- name: Output Packages
+  block:
+
+    - name: APT List Installed & Updated Packages
+      block:
+
+        - name: APT generate list of installed and updated packages
+          shell: grep -Ew "^$(date +%Y-%m-%d).+ (install|upgrade)" /var/log/dpkg.log | cut -d " " -f 3-4
+          changed_when: false
+          register: results
+
+        - name: APT List Installed & Updated Packages
+          debug:
+            msg: "{{ results.stdout_lines }}"
+
+      when: ansible_os_family == 'Debian'
+
+    - name: YUM List Installed & Updated Packages
+      block:
+
+        - name: YUM generate list of installed and updated packages
+          shell: grep -E "^$(date +"%b %d").+ (Installed|Updated)" /var/log/yum.log | cut -d " " -f 4-5
+          changed_when: false
+          register: results
+
+        - name: YUM List Installed & Updated Packages
+          debug:
+            msg: "{{ results.stdout_lines }}"
+
+      when: ansible_os_family == 'RedHat'
+
+  when: audit_packages

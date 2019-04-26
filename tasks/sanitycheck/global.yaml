@@ -1,0 +1,9 @@
+---
+- name: All Sanity
+  debug:
+    msg: "all_sanity"
+- name: Verify auditd is running
+  service:
+    name: auditd
+    state: started
+
